@@ -9,7 +9,9 @@
 # The functions and QP_* variables under test come from the sourced script,
 # which shellcheck cannot follow from here.
 # The stubs below are called by the sourced script, not from here (SC2329).
-# shellcheck disable=SC1091,SC2154,SC2034,SC2329,SC2016
+# The Windows-handler tests deliberately run in subshells so PATH and the fake
+# reg.exe controls stay local; that isolation is the point (SC2030/SC2031).
+# shellcheck disable=SC1091,SC2154,SC2034,SC2329,SC2016,SC2030,SC2031
 set -uo pipefail
 HERE=$(unset CDPATH; cd -- "$(dirname -- "$0")" && pwd)
 SRC=${1:-$HERE/../get-tesla-owner-token.sh}
@@ -144,6 +146,79 @@ HAVE_JQ=0
 eq "fallback pretty access_token" 'AAA' "$(json_get "$PRETTY" access_token)"
 eq "fallback pretty expires_in"   '300' "$(json_get "$PRETTY" expires_in)"
 eq "fallback pretty refresh_token" 'RRR' "$(json_get "$PRETTY" refresh_token)"
+
+echo "== windows handler registration/cleanup (regression) =="
+# Fake reg.exe and cygpath so the Windows arming path can run off-Windows.
+mkdir -p "$TMP/winbin"
+cat > "$TMP/winbin/cygpath" <<'FAKE'
+#!/bin/sh
+printf 'C:\\fake\\path\n'
+FAKE
+cat > "$TMP/winbin/reg" <<'FAKE'
+#!/bin/sh
+printf '%s\n' "$*" >> "$REG_LOG"
+[ "$1" = "${REG_FAIL_OP:-none}" ] && exit 1
+[ "$1" = query ] && { [ "${REG_KEY_EXISTS:-1}" -eq 1 ] || exit 1; }
+exit 0
+FAKE
+chmod +x "$TMP/winbin/cygpath" "$TMP/winbin/reg"
+export REG_LOG="$TMP/reg.log"
+
+# A pre-existing tesla:// handler must never be deleted when we never wrote one.
+: > "$REG_LOG"
+CAPTURE_REG_WRITTEN=0 CAPTURE_REGBACKUP="" CAPTURE_DIR=""
+( PATH="$TMP/winbin:$PATH"; capture_disarm_windows ) >/dev/null 2>&1
+if grep -q delete "$REG_LOG"; then
+  no "disarm without arming deletes nothing" "no reg delete" "$(tr '\n' ';' < "$REG_LOG")"
+else
+  ok "disarm without arming deletes nothing"
+fi
+
+# If the backup export fails, arming must abort before overwriting the key.
+: > "$REG_LOG"
+( export REG_FAIL_OP=export REG_KEY_EXISTS=1
+  PATH="$TMP/winbin:$PATH"; capture_arm_windows ) >/dev/null 2>&1
+rc=$?
+eq "failed backup aborts arming" 1 "$rc"
+if grep -q '^add' "$REG_LOG"; then
+  no "failed backup writes no key" "no reg add" "$(tr '\n' ';' < "$REG_LOG")"
+else
+  ok "failed backup writes no key"
+fi
+
+# With no pre-existing key, arming should still register.
+: > "$REG_LOG"
+( export REG_FAIL_OP=none REG_KEY_EXISTS=0
+  PATH="$TMP/winbin:$PATH"; capture_arm_windows ) >/dev/null 2>&1
+rc=$?
+eq "arming succeeds with no prior key" 0 "$rc"
+if grep -q '^add' "$REG_LOG"; then ok "arming writes the key"; else no "arming writes the key" "reg add" "none"; fi
+
+# Once we did write it, disarm must delete it.
+: > "$REG_LOG"
+CAPTURE_REG_WRITTEN=1 CAPTURE_REGBACKUP="" CAPTURE_DIR=""
+( PATH="$TMP/winbin:$PATH"; capture_disarm_windows ) >/dev/null 2>&1
+if grep -q delete "$REG_LOG"; then ok "disarm after arming deletes the key"; else no "disarm after arming deletes the key" "reg delete" "none"; fi
+unset REG_LOG
+
+echo "== linux handler cleanup (regression) =="
+# With no previous default, the mimeapps association must not be left dangling
+# pointing at the .desktop file we just deleted.
+lhome=$TMP/lhome
+mkdir -p "$lhome/.config" "$lhome/.local/share/applications"
+printf '[Default Applications]\nx-scheme-handler/tesla=tesla-scripts-callback-123.desktop\n' \
+  > "$lhome/.config/mimeapps.list"
+CAPTURE_DESKTOP="$lhome/.local/share/applications/tesla-scripts-callback-123.desktop"
+touch "$CAPTURE_DESKTOP"
+CAPTURE_DESKTOP_BASE="tesla-scripts-callback-123.desktop"
+CAPTURE_PREV_DEFAULT=""
+( HOME="$lhome"; XDG_CONFIG_HOME="$lhome/.config"; capture_disarm_linux ) >/dev/null 2>&1
+if grep -q 'x-scheme-handler/tesla' "$lhome/.config/mimeapps.list" 2>/dev/null; then
+  no "no dangling scheme association left" "association removed" "$(grep 'tesla' "$lhome/.config/mimeapps.list")"
+else
+  ok "no dangling scheme association left"
+fi
+CAPTURE_DESKTOP="" CAPTURE_DESKTOP_BASE="" CAPTURE_PREV_DEFAULT=""
 
 echo "== windows browser launch (regression: & truncation) =="
 # cmd.exe splits an unquoted URL at the first &, which silently reduced the

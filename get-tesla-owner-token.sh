@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-VERSION="1.1.2"
+VERSION="1.1.3"
 
 # --- Constants (verified against tesla_auth/src/auth.rs) ----------------------
 
@@ -326,7 +326,6 @@ HTTP_BODY=""
 # python is usually OpenSSL. Prefer whichever looks least likely to be flagged.
 MINT_BACKEND="auto"
 
-
 # Find a Python 3 built against OpenSSL. Windows rarely has "python3" on PATH:
 # python.org installs "python" plus the "py" launcher, and only the Microsoft
 # Store build provides "python3". So try all three spellings.
@@ -610,6 +609,8 @@ CAPTURE_APP=""
 CAPTURE_DESKTOP=""
 CAPTURE_PREV_DEFAULT=""
 CAPTURE_REGBACKUP=""
+CAPTURE_REG_WRITTEN=0
+CAPTURE_DESKTOP_BASE=""
 CAPTURE_ARMED=0
 CAPTURE_INTERRUPTED=0
 CAPTURED=""
@@ -696,13 +697,21 @@ capture_arm_windows() {
 
 	wincmd=$(cygpath -w "$cmdfile") || return 1
 
-	# Preserve an existing tesla:// handler so we can put it back.
+	# Preserve an existing tesla:// handler so we can put it back. If it cannot
+	# be backed up, leave it alone entirely rather than overwrite something we
+	# would not be able to restore.
 	if win_run reg query "HKCU\\Software\\Classes\\tesla" >/dev/null 2>&1; then
 		CAPTURE_REGBACKUP="$CAPTURE_DIR/tesla-key.reg"
-		win_run reg export "HKCU\\Software\\Classes\\tesla" \
-			"$(cygpath -w "$CAPTURE_REGBACKUP")" /y >/dev/null 2>&1 || CAPTURE_REGBACKUP=""
+		if ! win_run reg export "HKCU\\Software\\Classes\\tesla" \
+			"$(cygpath -w "$CAPTURE_REGBACKUP")" /y >/dev/null 2>&1; then
+			CAPTURE_REGBACKUP=""
+			return 1
+		fi
 	fi
 
+	# From here on a key may exist that we put there, so cleanup must remove it
+	# even if one of the writes below fails part-way.
+	CAPTURE_REG_WRITTEN=1
 	win_run reg add "HKCU\\Software\\Classes\\tesla" /ve /t REG_SZ \
 		/d "URL:Tesla Auth Callback" /f >/dev/null 2>&1 || return 1
 	win_run reg add "HKCU\\Software\\Classes\\tesla" /v "URL Protocol" /t REG_SZ \
@@ -713,10 +722,16 @@ capture_arm_windows() {
 }
 
 capture_disarm_windows() {
-	win_run reg delete "HKCU\\Software\\Classes\\tesla" /f >/dev/null 2>&1 || :
-	if [ -n "$CAPTURE_REGBACKUP" ] && [ -f "$CAPTURE_REGBACKUP" ]; then
-		win_run reg import "$(cygpath -w "$CAPTURE_REGBACKUP")" >/dev/null 2>&1 || :
+	# Never delete a key we did not write: arming can fail after `reg` is found
+	# but before anything is registered, and blindly deleting would take a real
+	# application's tesla:// registration with it.
+	if [ "$CAPTURE_REG_WRITTEN" -eq 1 ]; then
+		win_run reg delete "HKCU\\Software\\Classes\\tesla" /f >/dev/null 2>&1 || :
+		if [ -n "$CAPTURE_REGBACKUP" ] && [ -f "$CAPTURE_REGBACKUP" ]; then
+			win_run reg import "$(cygpath -w "$CAPTURE_REGBACKUP")" >/dev/null 2>&1 || :
+		fi
 	fi
+	CAPTURE_REG_WRITTEN=0
 }
 
 capture_arm_linux() {
@@ -736,6 +751,7 @@ HELPER
 	chmod +x "$helper" || return 1
 
 	base="tesla-scripts-callback-$$.desktop"
+	CAPTURE_DESKTOP_BASE=$base
 	CAPTURE_DESKTOP="$appsdir/$base"
 	cat > "$CAPTURE_DESKTOP" <<DESKTOP
 [Desktop Entry]
@@ -756,14 +772,30 @@ DESKTOP
 
 capture_disarm_linux() {
 	local appsdir="$HOME/.local/share/applications"
+	local mimeapps tmp
 	if [ -n "$CAPTURE_DESKTOP" ] && [ -f "$CAPTURE_DESKTOP" ]; then
 		rm -f "$CAPTURE_DESKTOP" || :
 	fi
 	if [ -n "$CAPTURE_PREV_DEFAULT" ]; then
 		xdg-mime default "$CAPTURE_PREV_DEFAULT" x-scheme-handler/tesla >/dev/null 2>&1 || :
+	elif [ -n "$CAPTURE_DESKTOP_BASE" ]; then
+		# Nothing claimed tesla:// before us and xdg-mime cannot unset a
+		# default, so drop the line by hand. Leaving it would point at the
+		# .desktop file just deleted - a permanent dangling association.
+		for mimeapps in "${XDG_CONFIG_HOME:-$HOME/.config}/mimeapps.list" \
+			"$appsdir/mimeapps.list"; do
+			[ -f "$mimeapps" ] || continue
+			tmp="$mimeapps.tesla-scripts.$$"
+			grep -v "^x-scheme-handler/tesla=$CAPTURE_DESKTOP_BASE\$" \
+				"$mimeapps" > "$tmp" 2>/dev/null || :
+			if [ -f "$tmp" ]; then
+				mv "$tmp" "$mimeapps" 2>/dev/null || rm -f "$tmp"
+			fi
+		done
 	fi
-	command -v update-desktop-database >/dev/null 2>&1 &&
+	if command -v update-desktop-database >/dev/null 2>&1; then
 		update-desktop-database "$appsdir" >/dev/null 2>&1 || :
+	fi
 }
 
 capture_arm() {
@@ -792,6 +824,7 @@ capture_cleanup() {
 	CAPTURE_DIR=""
 	CAPTURE_APP=""
 	CAPTURE_DESKTOP=""
+	CAPTURE_DESKTOP_BASE=""
 	CAPTURE_KIND=""
 	CAPTURE_ARMED=0
 }
@@ -824,9 +857,6 @@ capture_wait() {
 }
 
 # --- Flows --------------------------------------------------------------------
-
-
-
 
 # Split a pasted value into query parameters. Returns 0 if it looked like a URL
 # or query string, 1 if it was treated as a bare code.
@@ -1056,7 +1086,6 @@ do_refresh() {
 	emit_tokens
 }
 
-
 # resolve_token <arg> <ENV_NAME> <label>
 resolve_token() {
 	local arg=$1 envname=$2 label=$3 tok="" envval=""
@@ -1081,12 +1110,6 @@ resolve_token() {
 	fi
 	trim_input "$tok"
 }
-
-# base64url-decode a JWT payload. Local only - nothing is sent anywhere.
-
-# probe <url> [extra curl args...]
-
-
 
 # --- Startup ------------------------------------------------------------------
 

@@ -1,4 +1,4 @@
-import json, sys, threading
+import json, sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs
 
@@ -26,12 +26,6 @@ class H(BaseHTTPRequestHandler):
         b = out.encode()
         self.send_response(code); self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(b))); self.end_headers(); self.wfile.write(b)
-    def do_GET(self):
-        auth = self.headers.get('Authorization', '')
-        with open(LOG, 'w') as f: json.dump({"authorization": auth}, f)
-        code = 200 if auth == 'Bearer GOOD.TOKEN' else (403 if auth == 'Bearer FP.TOKEN' else 401)
-        self.send_response(code); self.send_header('Content-Length', '2'); self.end_headers(); self.wfile.write(b'{}')
-
 srv = HTTPServer(('127.0.0.1', 0), H)
 print(srv.server_port, flush=True)
 srv.serve_forever()

@@ -37,12 +37,17 @@ PORT=$(cat "$TMP/port" 2>/dev/null)
 BASE="http://127.0.0.1:$PORT"
 
 # A copy of the script whose endpoints point at the fake server.
-# $1 = token path on the fake server (default /token)
+# $1 = token path on the fake server (default /token). Each variant gets its own
+# file: a single shared path made $S/$SN/$SB aliases for one mutating script.
 mkscript() {
-	sed -e "s#^TOKEN_URL=.*#TOKEN_URL=\"$BASE${1:-/token}\"#" \
+	local path=${1:-/token}
+	local slug out
+	slug=$(printf '%s' "$path" | tr -c 'a-zA-Z0-9' '_')
+	out="$TMP/s$slug.sh"
+	sed -e "s#^TOKEN_URL=.*#TOKEN_URL=\"$BASE$path\"#" \
 	    -e "s#^TOKEN_URL_CN=.*#TOKEN_URL_CN=\"$BASE/token\"#" \
-	    "$SRC" > "$TMP/s.sh"
-	printf '%s' "$TMP/s.sh"
+	    "$SRC" > "$out"
+	printf '%s' "$out"
 }
 # Count leftover macOS handler bundles (find, not ls: shellcheck SC2012).
 leftover_bundles() {
@@ -105,7 +110,7 @@ TESLA_REFRESH_TOKEN=ENVLOSES bash "$S" --refresh ARGTOK --json </dev/null >/dev/
 eq "argument beats env"   'ARGTOK' "$(req_field refresh_token)"
 bash "$S" --refresh=EQTOK --json </dev/null >/dev/null 2>&1
 eq "--refresh=TOKEN form" 'EQTOK' "$(req_field refresh_token)"
-printf 'PIPEDTOK\n' | bash "$S" --refresh --json >/dev/null 2>&1
+printf 'PIPEDTOK\n' | env -u TESLA_REFRESH_TOKEN bash "$S" --refresh --json >/dev/null 2>&1
 eq "piped stdin, no env"  'PIPEDTOK' "$(req_field refresh_token)"
 eq "refresh grant_type"   'refresh_token' "$(req_field grant_type)"
 eq "refresh scope"        'openid email offline_access' "$(req_field scope)"
@@ -116,7 +121,7 @@ echo "== stdin without a trailing newline (regression) =="
 # --help and the README.
 printf %s 'NOEOLDASH' | bash "$S" --refresh - --json >/dev/null 2>&1
 eq "documented 'printf %s | --refresh -'" 'NOEOLDASH' "$(req_field refresh_token)"
-printf %s 'NOEOLPIPE' | bash "$S" --refresh --json >/dev/null 2>&1
+printf %s 'NOEOLPIPE' | env -u TESLA_REFRESH_TOKEN bash "$S" --refresh --json >/dev/null 2>&1
 eq "piped stdin, no dash, no newline"     'NOEOLPIPE' "$(req_field refresh_token)"
 printf '%s\n' 'WITHEOL' | bash "$S" --refresh - --json >/dev/null 2>&1
 eq "trailing newline still works"         'WITHEOL' "$(req_field refresh_token)"
@@ -127,8 +132,11 @@ printf '' | bash "$S" --refresh - --json >/dev/null 2>&1; eq "truly empty stdin 
 
 echo "== no dead code =="
 dead=0
+# Strip comments and the usage heredoc first: a name mentioned only in prose
+# must not count as a caller.
+sed -e 's/[[:space:]]*#.*$//' "$SRC" | sed -e "/^\tcat <<'USAGE_EOF'/,/^USAGE_EOF/d" > "$TMP/code-only.sh"
 grep -oE '^[a-z_][a-z0-9_]*\(\) \{' "$SRC" | sed 's/() {//' | while read -r fn; do
-	uses=$(grep -cE "(^|[^a-z_])$fn([^a-z0-9_]|$)" "$SRC")
+	uses=$(grep -cE "(^|[^a-z_])$fn([^a-z0-9_]|$)" "$TMP/code-only.sh")
 	[ "$uses" -le 1 ] && printf '%s\n' "$fn"
 done > "$TMP/dead.txt"
 dead=$(wc -l < "$TMP/dead.txt" | tr -d ' ')
