@@ -162,7 +162,12 @@ out=$(bash "$S" --help 2>&1)
 has "--help documents --manual" '--manual' "$out"
 has "--help documents --mint-with" '--mint-with' "$out"
 bash "$S" --bogus >/dev/null 2>&1; eq "unknown flag exits 2" 2 "$?"
-out=$(bash "$S" --version 2>&1); has "--version prints a version" '1.0.0' "$out"
+# Match any version rather than a literal, so a bump does not break the test.
+out=$(bash "$S" --version 2>&1)
+case $out in
+	*[0-9].[0-9]*) ok "--version prints a version" ;;
+	*) no "--version prints a version" "something like 1.2.3" "$out" ;;
+esac
 
 echo "== interactive prompts (pty) =="
 # Piped stdin skips the [Y/n] prompts entirely, so drive a real terminal.
