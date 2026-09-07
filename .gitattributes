@@ -1,0 +1,6 @@
+# Keep everything LF in the working tree. A CRLF checkout on Windows breaks the
+# shebang line and the script will not run under git-bash.
+* text=auto eol=lf
+*.sh text eol=lf
+*.md text eol=lf
+LICENSE text eol=lf
