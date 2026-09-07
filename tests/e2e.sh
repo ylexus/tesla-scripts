@@ -110,6 +110,34 @@ eq "piped stdin, no env"  'PIPEDTOK' "$(req_field refresh_token)"
 eq "refresh grant_type"   'refresh_token' "$(req_field grant_type)"
 eq "refresh scope"        'openid email offline_access' "$(req_field scope)"
 
+echo "== stdin without a trailing newline (regression) =="
+# `read` returns non-zero at EOF-without-newline but has already filled the
+# variable; `|| tok=""` discarded it, breaking the exact form documented in
+# --help and the README.
+printf %s 'NOEOLDASH' | bash "$S" --refresh - --json >/dev/null 2>&1
+eq "documented 'printf %s | --refresh -'" 'NOEOLDASH' "$(req_field refresh_token)"
+printf %s 'NOEOLPIPE' | bash "$S" --refresh --json >/dev/null 2>&1
+eq "piped stdin, no dash, no newline"     'NOEOLPIPE' "$(req_field refresh_token)"
+printf '%s\n' 'WITHEOL' | bash "$S" --refresh - --json >/dev/null 2>&1
+eq "trailing newline still works"         'WITHEOL' "$(req_field refresh_token)"
+out=$(printf %s 'tesla://auth/callback?code=NOEOLCB' | bash "$S" --manual --json 2>/dev/null)
+has "pasted callback with no trailing newline" '"access_token"' "$out"
+eq  "  and its code reached the endpoint" 'NOEOLCB' "$(req_field code)"
+printf '' | bash "$S" --refresh - --json >/dev/null 2>&1; eq "truly empty stdin still errors" 1 "$?"
+
+echo "== no dead code =="
+dead=0
+grep -oE '^[a-z_][a-z0-9_]*\(\) \{' "$SRC" | sed 's/() {//' | while read -r fn; do
+	uses=$(grep -cE "(^|[^a-z_])$fn([^a-z0-9_]|$)" "$SRC")
+	[ "$uses" -le 1 ] && printf '%s\n' "$fn"
+done > "$TMP/dead.txt"
+dead=$(wc -l < "$TMP/dead.txt" | tr -d ' ')
+if [ "$dead" -eq 0 ]; then
+	ok "every function has at least one caller"
+else
+	no "every function has at least one caller" "none uncalled" "$(tr '\n' ' ' < "$TMP/dead.txt")"
+fi
+
 echo "== mint backend (TLS stack for the token exchange) =="
 out_curl=$(printf '%s\n' "$CB" | bash "$S" --manual --json --mint-with curl 2>/dev/null)
 has "curl backend mints" '"access_token":"ACCESS.TOKEN.aaa-_1"' "$out_curl"

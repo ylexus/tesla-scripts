@@ -44,6 +44,27 @@ eq "decode issuer" 'https://auth.tesla.cn/oauth2/v3' "$(urldecode 'https%3A%2F%2
 eq "decode plus as space" 'a b' "$(urldecode 'a+b')"
 eq "decode backslash safe" 'a\nb' "$(urldecode 'a%5Cnb')"
 
+echo "== urldecode: malformed percent-escapes (regression) =="
+# A stray % made printf %b emit "missing hex digit for \x" on stderr and
+# corrupt or silently truncate the value.
+dec() { urldecode "$1" 2>/dev/null; }
+eq "trailing bare %"        'abc%'   "$(dec 'abc%')"
+eq "invalid hex %zz"        'a%zz'   "$(dec 'a%zz')"
+eq "lone % mid-string"      'a%b'    "$(dec 'a%b')"
+eq "doubled %%"             'a%%b'   "$(dec 'a%%b')"
+eq "% at very end alone"    '%'      "$(dec '%')"
+eq "valid escapes still ok" 'AB'     "$(dec '%41%42')"
+eq "valid slash"            '/'      "$(dec '%2F')"
+eq "lowercase hex"          '/'      "$(dec '%2f')"
+eq "mixed valid+invalid"    'a b%zz' "$(dec 'a%20b%zz')"
+err_out=$(urldecode 'abc%' 2>&1 >/dev/null)
+eq "no stderr noise on malformed input" '' "$err_out"
+
+echo "== urlencode: non-ASCII bytes (regression) =="
+# printf "'$c" yields a signed byte, so %02X of 0xC3 printed as FFFFFFFFFFFFFFC3.
+eq "utf-8 e-acute" 'caf%C3%A9' "$(urlencode 'café')"
+eq "utf-8 euro"    '%E2%82%AC' "$(urlencode '€')"
+
 echo "== authorize URL =="
 U=$(build_authorize_url 'CHAL' 'STATE123')
 eq "authorize URL byte-exact" \

@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-VERSION="1.1.1"
+VERSION="1.1.2"
 
 # --- Constants (verified against tesla_auth/src/auth.rs) ----------------------
 
@@ -108,13 +108,18 @@ USAGE_EOF
 # Percent-encode a string per RFC 3986 unreserved set.
 urlencode() {
 	local LC_ALL=C
-	local s=$1 out="" i=0 c len
+	local s=$1 out="" i=0 c len n
 	len=${#s}
 	while [ "$i" -lt "$len" ]; do
 		c=${s:i:1}
 		case $c in
 			[A-Za-z0-9._~-]) out="$out$c" ;;
-			*) out="$out$(printf '%%%02X' "'$c")" ;;
+			*)
+				# printf "'c" yields a *signed* byte, so 0xC3 arrives as -61 and
+				# %02X printed it as FFFFFFFFFFFFFFC3. Mask back to 0-255.
+				n=$(printf '%d' "'$c")
+				out="$out$(printf '%%%02X' "$(( n & 255 ))")"
+				;;
 		esac
 		i=$((i + 1))
 	done
@@ -122,11 +127,36 @@ urlencode() {
 }
 
 # Percent-decode a query-string component ('+' means space).
+#
+# Only well-formed %HH triples are decoded; a stray or malformed % is left
+# alone. Blindly rewriting every % to \x made printf report "missing hex digit
+# for \x" and either corrupt the value or silently truncate it ("a%b" -> "a").
 urldecode() {
-	local s=$1
-	s=${s//\\/\\\\}
+	local LC_ALL=C
+	local s=$1 esc="" i=0 len c h
 	s=${s//+/ }
-	printf '%b' "${s//%/\\x}"
+	len=${#s}
+	while [ "$i" -lt "$len" ]; do
+		c=${s:i:1}
+		if [ "$c" = "%" ] && [ $((i + 3)) -le "$len" ]; then
+			h=${s:i+1:2}
+			case $h in
+				[0-9A-Fa-f][0-9A-Fa-f])
+					esc="$esc\\x$h"
+					i=$((i + 3))
+					continue
+					;;
+				*) : ;;
+			esac
+		fi
+		# Escape backslashes so the final %b does not eat them.
+		case $c in
+			\\) esc="$esc\\\\" ;;
+			*) esc="$esc$c" ;;
+		esac
+		i=$((i + 1))
+	done
+	printf '%b' "$esc"
 }
 
 # Trim whitespace, a trailing CR (git-bash paste from Windows tools) and one
@@ -296,10 +326,6 @@ HTTP_BODY=""
 # python is usually OpenSSL. Prefer whichever looks least likely to be flagged.
 MINT_BACKEND="auto"
 
-curl_tls_backend() {
-	curl_run --version 2>/dev/null | head -1 |
-		sed -n 's/.*(\(.*\)).*/\1/p' | tr '[:upper:]' '[:lower:]'
-}
 
 # Find a Python 3 built against OpenSSL. Windows rarely has "python3" on PATH:
 # python.org installs "python" plus the "py" launcher, and only the Microsoft
@@ -858,7 +884,7 @@ browser_gate() {
 	local url=$1 ans=""
 	if [ "$NO_BROWSER" -eq 1 ] || [ ! -t 0 ]; then return 0; fi
 	printf 'Open the login page in your default browser now? [Y/n] ' >&2
-	IFS= read -r ans || ans=""
+	IFS= read -r ans || :
 	case $(printf '%s' "$ans" | tr '[:upper:]' '[:lower:]') in
 		n|no) : ;;
 		*)
@@ -877,7 +903,9 @@ prompt_paste() {
 	local line=""
 	while :; do
 		printf 'Paste the tesla://auth/callback URL (or a bare code): ' >&2
-		if ! IFS= read -r line; then
+		# A pasted URL with no trailing newline makes read return non-zero with
+		# the value already in `line`. Only give up when nothing arrived.
+		if ! IFS= read -r line && [ -z "$line" ]; then
 			msg ""
 			die "no input received"
 		fi
@@ -1033,19 +1061,22 @@ do_refresh() {
 resolve_token() {
 	local arg=$1 envname=$2 label=$3 tok="" envval=""
 	envval=${!envname:-}
+	# `read` returns non-zero when the input ends without a newline, but it has
+	# still filled the variable. `|| tok=""` would discard exactly what was
+	# read - which broke the documented `printf %s "$tok" | ... --refresh -`.
 	if [ -n "$arg" ] && [ "$arg" != "-" ]; then
 		tok=$arg
 	elif [ "$arg" = "-" ]; then
 		# Explicit request for stdin.
-		IFS= read -r tok || tok=""
+		IFS= read -r tok || :
 	elif [ -n "$envval" ]; then
 		tok=$envval
 	elif [ ! -t 0 ]; then
 		# Piped in, no env var: read whatever is on stdin.
-		IFS= read -r tok || tok=""
+		IFS= read -r tok || :
 	else
 		printf 'Paste the %s (not echoed): ' "$label" >&2
-		IFS= read -r -s tok || tok=""
+		IFS= read -r -s tok || :
 		printf '\n' >&2
 	fi
 	trim_input "$tok"
