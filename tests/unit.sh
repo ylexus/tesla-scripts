@@ -8,7 +8,8 @@
 #
 # The functions and QP_* variables under test come from the sourced script,
 # which shellcheck cannot follow from here.
-# shellcheck disable=SC1091,SC2154,SC2034
+# The stubs below are called by the sourced script, not from here (SC2329).
+# shellcheck disable=SC1091,SC2154,SC2034,SC2329,SC2016
 set -uo pipefail
 HERE=$(unset CDPATH; cd -- "$(dirname -- "$0")" && pwd)
 SRC=${1:-$HERE/../get-tesla-owner-token.sh}
@@ -122,6 +123,60 @@ HAVE_JQ=0
 eq "fallback pretty access_token" 'AAA' "$(json_get "$PRETTY" access_token)"
 eq "fallback pretty expires_in"   '300' "$(json_get "$PRETTY" expires_in)"
 eq "fallback pretty refresh_token" 'RRR' "$(json_get "$PRETTY" refresh_token)"
+
+echo "== windows browser launch (regression: & truncation) =="
+# cmd.exe splits an unquoted URL at the first &, which silently reduced the
+# authorize URL to "...authorize?response_type=code" on Git Bash.
+# Strip comments first: the branch explains *why* it avoids cmd.exe.
+win_branch=$(sed -n '/^open_url() {/,/^}/p' "$SRC" | grep -v '^[[:space:]]*#')
+case $win_branch in
+  *"cmd.exe"*) no "no cmd.exe in the Windows launcher" "absent" "present" ;;
+  *) ok "no cmd.exe in the Windows launcher" ;;
+esac
+case $win_branch in
+  *"rundll32"*) ok "uses rundll32 FileProtocolHandler" ;;
+  *) no "uses rundll32 FileProtocolHandler" "present" "absent" ;;
+esac
+case $win_branch in
+  *'Start-Process $env:TESLA_AUTHORIZE_URL'*) ok "PowerShell takes the URL from the environment" ;;
+  *) no "PowerShell takes the URL from the environment" "env var" "command line" ;;
+esac
+
+echo "== mint backend selection =="
+# Stub the two inputs choose_mint_backend reads.
+_curl_ver=""
+curl_run() { printf '%s\n' "$_curl_ver"; }
+_py_found=0
+detect_python() { PY_CMD=(python3); return $(( _py_found ? 0 : 1 )); }
+
+pick() { MINT_BACKEND=auto; NATIVE_TLS_FALLBACK=0; choose_mint_backend; }
+
+_curl_ver='curl 8.7.1 (x86_64-apple-darwin25.0) libcurl/8.7.1 (SecureTransport) LibreSSL/3.3.6'
+_py_found=1; pick
+eq "macOS curl + python  -> python" python "$MINT_BACKEND"
+eq "  and no fallback warning" 0 "$NATIVE_TLS_FALLBACK"
+_py_found=0; pick
+eq "macOS curl, no python -> curl" curl "$MINT_BACKEND"
+eq "  and warns"                  1 "$NATIVE_TLS_FALLBACK"
+
+_curl_ver='curl 8.21.0 (aarch64-w64-mingw32) libcurl/8.21.0 Schannel zlib/1.3.2'
+_py_found=1; pick
+eq "Windows Schannel + python -> python" python "$MINT_BACKEND"
+_py_found=0; pick
+eq "Windows Schannel, no python -> curl" curl "$MINT_BACKEND"
+eq "  and warns"                          1 "$NATIVE_TLS_FALLBACK"
+
+_curl_ver='curl 8.5.0 (x86_64-pc-linux-gnu) libcurl/8.5.0 OpenSSL/3.0.13 zlib/1.3'
+_py_found=1; pick
+eq "Linux OpenSSL curl -> curl" curl "$MINT_BACKEND"
+eq "  and no fallback warning"  0 "$NATIVE_TLS_FALLBACK"
+_curl_ver='curl 8.5.0 (x86_64-pc-linux-gnu) libcurl/8.5.0 GnuTLS/3.8.3'
+_py_found=0; pick
+eq "GnuTLS curl -> curl" curl "$MINT_BACKEND"
+
+MINT_BACKEND=curl;   choose_mint_backend; eq "explicit curl respected"   curl   "$MINT_BACKEND"
+MINT_BACKEND=python; choose_mint_backend; eq "explicit python respected" python "$MINT_BACKEND"
+unset -f curl_run detect_python
 
 echo "== curl config escaping =="
 eq "conf line" 'header = "Authorization: Bearer abc"' "$(curl_conf_line header 'Authorization: Bearer abc')"

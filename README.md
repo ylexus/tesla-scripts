@@ -53,7 +53,7 @@ Works as-is in macOS Terminal, Linux and Git Bash on Windows.
 | Shell | `bash` 3.2 or newer (macOS ships 3.2; the script targets it) |
 | Required | `curl`, `openssl` |
 | Optional | `jq` — used if present, with a built-in fallback parser if not |
-| Optional | `python3` — used for the token exchange where curl's TLS stack is a poor bet (see [`--mint-with`](#which-tls-stack-mints-the-token)) |
+| Optional | `python3` / `python` / `py -3` — used for the token exchange where curl's TLS stack is a poor bet (see [`--mint-with`](#which-tls-stack-mints-the-token)) |
 
 ### Usage
 
@@ -250,9 +250,14 @@ So `--mint-with` chooses which stack performs the token exchange:
 | `curl` | Always curl. |
 | `python` | Always python3 (`urllib`, so OpenSSL). |
 
-Both paths send an identical request and are covered by the test suite. On
-Git for Windows, curl is normally an OpenSSL build, so `auto` keeps using curl
-there; if `python3` is absent it falls back to curl regardless.
+Both paths send an identical request and are covered by the test suite.
+
+**Git for Windows ships curl built against Schannel**, Windows' native TLS — the
+same *kind* of platform-native stack as macOS's SecureTransport, which is the one
+confirmed to mint refused tokens. So `auto` prefers Python there too. Windows
+rarely has `python3` on `PATH` (python.org installs `python` plus the `py`
+launcher; only the Microsoft Store build provides `python3`), so all three
+spellings are tried. If none is found the script falls back to curl and says so.
 
 If your tokens are rejected by a client that should accept them, mint with the
 other backend and compare.

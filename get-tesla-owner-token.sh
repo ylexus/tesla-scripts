@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 
 # --- Constants (verified against tesla_auth/src/auth.rs) ----------------------
 
@@ -231,18 +231,27 @@ open_url() {
 			fi
 			;;
 		CYGWIN*|MINGW*|MSYS*)
-			# MSYS rewrites anything that looks like a path, which mangles URLs.
-			# The `//c` spelling is deliberate: MSYS collapses it to `/c`. Do not
-			# disable path conversion here or cmd.exe sees a literal `//c`.
-			if command -v cmd.exe >/dev/null 2>&1; then
-				if cmd.exe //c start "" "$url" >/dev/null 2>&1; then return 0; fi
+			# Never hand the URL to cmd.exe. There, `&` separates commands, and
+			# Windows only auto-quotes arguments that contain spaces - an
+			# authorize URL has none, so `cmd //c start "" "$url"` arrives
+			# unquoted and is truncated at the first `&`, leaving just
+			# ...authorize?response_type=code. The launchers below are started
+			# with CreateProcess and receive the URL as a single argument.
+			if command -v rundll32 >/dev/null 2>&1; then
+				if MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' \
+					rundll32 url.dll,FileProtocolHandler "$url" >/dev/null 2>&1; then return 0; fi
 			fi
+			# PowerShell would read `&` as its call operator, so pass the URL in
+			# the environment and keep it off the command line entirely.
 			if command -v powershell.exe >/dev/null 2>&1; then
-				if powershell.exe -NoProfile -Command Start-Process "$url" >/dev/null 2>&1; then return 0; fi
+				# shellcheck disable=SC2016  # $env: is PowerShell syntax, not shell
+				if TESLA_AUTHORIZE_URL="$url" MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' \
+					powershell.exe -NoProfile -NonInteractive \
+					-Command 'Start-Process $env:TESLA_AUTHORIZE_URL' >/dev/null 2>&1; then return 0; fi
 			fi
 			if command -v explorer.exe >/dev/null 2>&1; then
 				# explorer.exe returns a non-zero status even on success; ignore it.
-				explorer.exe "$url" >/dev/null 2>&1 || :
+				MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' explorer.exe "$url" >/dev/null 2>&1 || :
 				return 0
 			fi
 			;;
@@ -292,9 +301,32 @@ curl_tls_backend() {
 		sed -n 's/.*(\(.*\)).*/\1/p' | tr '[:upper:]' '[:lower:]'
 }
 
-python_has_openssl() {
-	command -v python3 >/dev/null 2>&1 || return 1
-	python3 -c 'import ssl,sys; sys.exit(0 if "openssl" in ssl.OPENSSL_VERSION.lower() else 1)' 2>/dev/null
+# Find a Python 3 built against OpenSSL. Windows rarely has "python3" on PATH:
+# python.org installs "python" plus the "py" launcher, and only the Microsoft
+# Store build provides "python3". So try all three spellings.
+PY_CMD=()
+NATIVE_TLS_FALLBACK=0
+
+python_probe='import ssl,sys; sys.exit(0 if sys.version_info[0] == 3 and "openssl" in ssl.OPENSSL_VERSION.lower() else 1)'
+
+detect_python() {
+	if [ ${#PY_CMD[@]} -gt 0 ]; then return 0; fi
+	local c
+	for c in python3 python; do
+		if command -v "$c" >/dev/null 2>&1; then
+			if "$c" -c "$python_probe" >/dev/null 2>&1; then
+				PY_CMD=("$c")
+				return 0
+			fi
+		fi
+	done
+	if command -v py >/dev/null 2>&1; then
+		if py -3 -c "$python_probe" >/dev/null 2>&1; then
+			PY_CMD=(py -3)
+			return 0
+		fi
+	fi
+	return 1
 }
 
 # Decide once, at startup.
@@ -308,10 +340,14 @@ choose_mint_backend() {
 			MINT_BACKEND="curl"
 			;;
 		*)
-			if python_has_openssl; then
+			# curl is on a platform-native stack (SecureTransport on macOS,
+			# Schannel on Windows). Those are the ones seen to mint tokens the
+			# Owner API then refuses, so prefer OpenSSL via python if we can.
+			if detect_python; then
 				MINT_BACKEND="python"
 			else
 				MINT_BACKEND="curl"
+				NATIVE_TLS_FALLBACK=1
 			fi
 			;;
 	esac
@@ -322,11 +358,15 @@ choose_mint_backend() {
 post_form_python() {
 	local url=$1
 	shift
+	if ! detect_python; then
+		err "no Python 3 with OpenSSL found (tried python3, python, py -3)."
+		return 1
+	fi
 	local rc=0 resp="" p
 	set +e
 	resp=$(
 		{ for p in "$@"; do printf '%s\n' "$p"; done; } |
-			MINT_URL="$url" python3 -c 'import os, sys, urllib.parse, urllib.request, urllib.error
+			MINT_URL="$url" "${PY_CMD[@]}" -c 'import os, sys, urllib.parse, urllib.request, urllib.error
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     # tesla_auth uses redirect::Policy::none() on the token call.
@@ -1106,6 +1146,13 @@ main() {
 	trap capture_cleanup EXIT
 
 	choose_mint_backend
+	if [ "$NATIVE_TLS_FALLBACK" -eq 1 ]; then
+		warn "minting over curl's platform-native TLS stack; no Python 3 with"
+		msg "  OpenSSL was found (tried python3, python, py -3). Tokens minted this"
+		msg "  way are sometimes accepted by auth.tesla.com and then refused by the"
+		msg "  Owner API. If your client rejects these tokens, install Python 3 or a"
+		msg "  curl built against OpenSSL and run this again."
+	fi
 
 	case $MODE in
 		interactive) do_interactive ;;

@@ -130,6 +130,20 @@ else
 fi
 bash "$S" --mint-with bogus >/dev/null 2>&1; eq "bad --mint-with exits 2" 2 "$?"
 
+# Windows rarely has "python3" on PATH. Check the other two spellings resolve.
+PYBIN=$(command -v python3 2>/dev/null || true)
+if [ -n "$PYBIN" ]; then
+	mkdir -p "$TMP/spell"
+	ln -sf "$PYBIN" "$TMP/spell/python"
+	printf '#!/bin/sh\nshift\nexec %s "$@"\n' "$PYBIN" > "$TMP/spell/py"
+	chmod +x "$TMP/spell/py"
+	out=$(printf '%s\n' "$CB" | PATH="$TMP/spell:/usr/bin:/bin" bash "$S" --manual --json --mint-with python 2>&1)
+	has "finds 'python' when python3 is absent" '"access_token"' "$out"
+	rm -f "$TMP/spell/python"
+	out=$(printf '%s\n' "$CB" | PATH="$TMP/spell:/usr/bin:/bin" bash "$S" --manual --json --mint-with python 2>&1)
+	has "falls back to 'py -3'" '"access_token"' "$out"
+fi
+
 echo "== jq fallback parity =="
 mkdir -p "$TMP/nojq"
 out_jq=$(printf '%s\n' "$CB" | bash "$S" --manual --json 2>/dev/null)
