@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-VERSION="1.1.0"
+VERSION="1.1.1"
 
 # --- Constants (verified against tesla_auth/src/auth.rs) ----------------------
 
@@ -68,11 +68,11 @@ OPTIONS
   --manual           Skip automatic callback capture and paste the callback
                      URL by hand (the DevTools method).
   --mint-with WHICH  TLS stack for the token exchange: curl, python or auto
-                     (default). Which stack mints the token appears to matter:
-                     tokens minted over some handshakes are accepted by
-                     auth.tesla.com and then refused by owner-api. auto avoids
-                     curl when it is built against LibreSSL or SecureTransport,
-                     as macOS's system curl is.
+                     (default). Which stack mints the token matters: tokens
+                     minted over some handshakes are accepted by auth.tesla.com
+                     and then refused by owner-api. auto uses curl everywhere
+                     except when curl is a LibreSSL/SecureTransport build (the
+                     macOS system curl), where it prefers python if available.
   --no-browser       Never try to launch a browser; just print the URL.
   --version          Print version and exit.
   --help             This help.
@@ -336,19 +336,20 @@ choose_mint_backend() {
 		*) : ;;
 	esac
 	case $(curl_run --version 2>/dev/null | head -1 | tr '[:upper:]' '[:lower:]') in
-		*openssl*|*gnutls*|*boringssl*)
-			MINT_BACKEND="curl"
-			;;
-		*)
-			# curl is on a platform-native stack (SecureTransport on macOS,
-			# Schannel on Windows). Those are the ones seen to mint tokens the
-			# Owner API then refuses, so prefer OpenSSL via python if we can.
+		*libressl*|*securetransport*)
+			# The only stack seen to mint tokens that auth.tesla.com issues and
+			# the Owner API then refuses with 403: macOS's system curl. Git for
+			# Windows curl on Schannel and Linux curl on OpenSSL or GnuTLS have
+			# all been confirmed to mint working tokens, so leave them alone.
 			if detect_python; then
 				MINT_BACKEND="python"
 			else
 				MINT_BACKEND="curl"
 				NATIVE_TLS_FALLBACK=1
 			fi
+			;;
+		*)
+			MINT_BACKEND="curl"
 			;;
 	esac
 	return 0
@@ -1147,11 +1148,10 @@ main() {
 
 	choose_mint_backend
 	if [ "$NATIVE_TLS_FALLBACK" -eq 1 ]; then
-		warn "minting over curl's platform-native TLS stack; no Python 3 with"
-		msg "  OpenSSL was found (tried python3, python, py -3). Tokens minted this"
-		msg "  way are sometimes accepted by auth.tesla.com and then refused by the"
-		msg "  Owner API. If your client rejects these tokens, install Python 3 or a"
-		msg "  curl built against OpenSSL and run this again."
+		warn "this curl is a LibreSSL/SecureTransport build, which is known to mint"
+		msg "  tokens that auth.tesla.com issues and the Owner API then refuses. No"
+		msg "  Python 3 with OpenSSL was found to mint with instead (tried python3,"
+		msg "  python, py -3). If your client rejects these tokens, install Python 3."
 	fi
 
 	case $MODE in

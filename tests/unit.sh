@@ -153,26 +153,30 @@ pick() { MINT_BACKEND=auto; NATIVE_TLS_FALLBACK=0; choose_mint_backend; }
 
 _curl_ver='curl 8.7.1 (x86_64-apple-darwin25.0) libcurl/8.7.1 (SecureTransport) LibreSSL/3.3.6'
 _py_found=1; pick
-eq "macOS curl + python  -> python" python "$MINT_BACKEND"
-eq "  and no fallback warning" 0 "$NATIVE_TLS_FALLBACK"
+eq "macOS LibreSSL curl + python  -> python" python "$MINT_BACKEND"
+eq "  and no warning"                        0 "$NATIVE_TLS_FALLBACK"
 _py_found=0; pick
-eq "macOS curl, no python -> curl" curl "$MINT_BACKEND"
-eq "  and warns"                  1 "$NATIVE_TLS_FALLBACK"
+eq "macOS LibreSSL curl, no python -> curl"  curl "$MINT_BACKEND"
+eq "  and warns"                             1 "$NATIVE_TLS_FALLBACK"
 
+# Confirmed in the field: Git for Windows curl on Schannel mints tokens the
+# Owner API accepts, so it must not be diverted to python or warned about.
 _curl_ver='curl 8.21.0 (aarch64-w64-mingw32) libcurl/8.21.0 Schannel zlib/1.3.2'
 _py_found=1; pick
-eq "Windows Schannel + python -> python" python "$MINT_BACKEND"
+eq "Windows Schannel + python -> curl"   curl "$MINT_BACKEND"
+eq "  and no warning"                    0 "$NATIVE_TLS_FALLBACK"
 _py_found=0; pick
 eq "Windows Schannel, no python -> curl" curl "$MINT_BACKEND"
-eq "  and warns"                          1 "$NATIVE_TLS_FALLBACK"
+eq "  and no warning"                    0 "$NATIVE_TLS_FALLBACK"
 
 _curl_ver='curl 8.5.0 (x86_64-pc-linux-gnu) libcurl/8.5.0 OpenSSL/3.0.13 zlib/1.3'
 _py_found=1; pick
 eq "Linux OpenSSL curl -> curl" curl "$MINT_BACKEND"
-eq "  and no fallback warning"  0 "$NATIVE_TLS_FALLBACK"
+eq "  and no warning"           0 "$NATIVE_TLS_FALLBACK"
 _curl_ver='curl 8.5.0 (x86_64-pc-linux-gnu) libcurl/8.5.0 GnuTLS/3.8.3'
 _py_found=0; pick
 eq "GnuTLS curl -> curl" curl "$MINT_BACKEND"
+eq "  and no warning"    0 "$NATIVE_TLS_FALLBACK"
 
 MINT_BACKEND=curl;   choose_mint_backend; eq "explicit curl respected"   curl   "$MINT_BACKEND"
 MINT_BACKEND=python; choose_mint_backend; eq "explicit python respected" python "$MINT_BACKEND"

@@ -47,13 +47,12 @@ Works as-is in macOS Terminal, Linux and Git Bash on Windows.
 
 ### Requirements
 
-| | |
-|---|---|
-| Platforms | Windows (Git Bash), Linux, macOS |
-| Shell | `bash` 3.2 or newer (macOS ships 3.2; the script targets it) |
-| Required | `curl`, `openssl` |
-| Optional | `jq` — used if present, with a built-in fallback parser if not |
-| Optional | `python3` / `python` / `py -3` — used for the token exchange where curl's TLS stack is a poor bet (see [`--mint-with`](#which-tls-stack-mints-the-token)) |
+* **Platforms** — Windows (Git Bash), Linux, macOS
+* **Shell** — `bash` 3.2 or newer (macOS ships 3.2; the script targets it)
+* **Required** — `curl`, `openssl`
+* **Optional** — `jq`, used if present, with a built-in fallback parser if not
+* **Optional** — `python3` / `python` / `py -3`, used for the token exchange when
+  curl's TLS stack is a poor bet (see [`--mint-with`](#which-tls-stack-mints-the-token))
 
 ### Usage
 
@@ -232,6 +231,7 @@ was reproduced and then fixed during this script's development:
   `403 {"error":"forbidden, see https://developer.tesla.com/docs/fleet-api"}`.
 * Minted with **python3** (OpenSSL 3.6.3), same account, same script, minutes
   later — the token works.
+* Minted with **Git for Windows curl** (Schannel) — the token works.
 
 **It is not the protocol version.** macOS system curl already negotiates TLS 1.3
 here and was still refused, and forcing TLS 1.2 changed nothing. Nor is it the
@@ -244,20 +244,22 @@ returns `unsupported_grant_type`), and the age of the authorization grant.
 
 So `--mint-with` chooses which stack performs the token exchange:
 
-| | |
+| Value | Behaviour |
 |---|---|
-| `auto` (default) | Use `curl` when it is built against OpenSSL, GnuTLS or BoringSSL. Otherwise use `python3` if it has OpenSSL. This means **macOS uses python, Linux normally uses curl.** |
+| `auto` (default) | Use `curl`, except when curl is a LibreSSL/SecureTransport build — the macOS system curl — where `python` is preferred if available. |
 | `curl` | Always curl. |
-| `python` | Always python3 (`urllib`, so OpenSSL). |
+| `python` | Always python (`urllib`, so OpenSSL). |
 
 Both paths send an identical request and are covered by the test suite.
 
-**Git for Windows ships curl built against Schannel**, Windows' native TLS — the
-same *kind* of platform-native stack as macOS's SecureTransport, which is the one
-confirmed to mint refused tokens. So `auto` prefers Python there too. Windows
-rarely has `python3` on `PATH` (python.org installs `python` plus the `py`
-launcher; only the Microsoft Store build provides `python3`), so all three
-spellings are tried. If none is found the script falls back to curl and says so.
+**Git for Windows ships curl built against Schannel**, and that has been
+confirmed to mint working tokens — so `auto` leaves it alone. Being a
+platform-native stack is not itself the problem; only the macOS LibreSSL build
+has actually produced tokens the Owner API refuses.
+
+Where python *is* preferred (macOS), all three interpreter spellings are tried,
+because Windows rarely has `python3` on `PATH`: python.org installs `python`
+plus the `py` launcher, and only the Microsoft Store build provides `python3`.
 
 If your tokens are rejected by a client that should accept them, mint with the
 other backend and compare.
